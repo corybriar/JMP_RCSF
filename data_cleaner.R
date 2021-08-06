@@ -129,8 +129,11 @@ sanfran19 <- get_acs(geography = "tract",
                    output = "wide",
                    geometry = T) %>% 
   mutate(Hskill19 = bachelorsME +bachelorsFE +mastersME +mastersFE + professionalME + professionalFE + phdME + phdFE) %>%
+  filter(pop25E > 0) %>%
   mutate(Lskill19 = pop25E - Hskill19) %>%
-  dplyr::select(GEOID, NAME, Hskill19, Lskill19, geometry)
+  dplyr::select(GEOID, NAME, Hskill19, Lskill19, geometry) 
+
+sanfran19
 
 sanfran10 <- get_acs(geography = "tract",
                    variables = c(
@@ -149,8 +152,9 @@ sanfran10 <- get_acs(geography = "tract",
                    geometry = T) %>% 
   mutate(Hskill10 = bachelorsME +bachelorsFE +mastersME +mastersFE + professionalME + professionalFE + phdME + phdFE) %>%
   mutate(Lskill10 = pop25E - Hskill10) %>%
+  filter(pop25E >0) %>%
   dplyr::select(GEOID, NAME, Hskill10, Lskill10, geometry) %>%
-  mutate(geometry = st_centroid(geometry))
+  mutate(geometry = st_centroid(geometry)) 
 # Merge dfs for 2019 and 2010
 sanfran <- st_join(sanfran19,sanfran10) %>%
   dplyr::select(GEOID.x, NAME.x, Hskill19, Lskill19, Hskill10, Lskill10, geometry) %>%
@@ -167,6 +171,18 @@ sf_shape <- get_acs(geography = "county",
                      geometry = T) %>%
   filter(NAME == "San Francisco County, California")
 sf_city <- sanfran[st_intersects(st_centroid(sanfran$geometry), sf_shape, sparse = F),]
+
+#-----------PUMA SORT---------------
+pumas <- pumas[st_intersects(st_centroid(pumas),sf_shape,sparse = F), ]
+
+puma_tract <- mapply(function(t){
+  p <- pumas[st_intersects(st_centroid(t),pumas,sparse=F),]$PUMA[1]
+  print(p)
+  return(p)
+},sf_city$geometry)
+
+sf_city$puma <- puma_tract
+sf_city$puma[is.na(sf_city$puma) == T] <- "07502"
 
 # Merge with Ipums data
 puma_merge <- map_df(sf_city$NAME,function(x){
@@ -198,7 +214,7 @@ puma_merge <- map_df(sf_city$NAME,function(x){
 # Merge into sf_city
 sf_city <- sf_city %>% left_join(puma_merge, by = "NAME") %>% distinct(NAME, .keep_all = T) 
 
-test <- sf_city %>% 
+sf_city <- sf_city %>% 
   mutate(cent = st_centroid(geometry),
          CshareH10 = CrateH10*Hskill10/sum(sanfran$Hskill10, na.rm = T),
          CshareL10 = CrateL10*Lskill10/sum(sanfran$Lskill10, na.rm = T),
@@ -218,9 +234,6 @@ test <- sf_city %>%
          OshareH19 = OrateH19*Hskill19/sum(sanfran$Hskill19),
          OshareL19 = OrateL19*Lskill19/sum(sanfran$Lskill19)
          )
-
-# Separate out lat and long coordinates
-sf_city <- sf_city %>% tidyr::extract(cent, c('lat', 'lon'), '\\((.*), (.*)\\)', convert = TRUE)
 
 #-------------BUILDING PERMIT DATA----------------------
 # Permits from open data
@@ -372,8 +385,16 @@ conlotto <- conlotto %>%
   mutate(struct_num = n(),
          units_convo = n()*Number_Of_Units) %>% ungroup() 
 
+zip_shape <- get_acs(geography = "zip code tabulation area",
+                     variables = c(
+                       pop25 = "B15002_001"),
+                     year = 2019,
+                     output = "wide",
+                     geometry = T) 
+zip_shape <- zip_shape[st_intersects(st_centroid(zip_shape),sf_shape,sparse = F),]
+
 # Assign tracts to zip codes by majority share
-zip_tract <- map_df(1:196, function(x){
+zip_tract <- map_df(1:195, function(x){
   tract <- sf_city[x,]
   zip <- zip_shape[st_intersects(zip_shape,tract, sparse = F),][which.max(st_area(st_intersection(zip_shape,tract))),]
   df <- tibble(
@@ -446,16 +467,7 @@ build$yrbuilt <- yrbuilt$value
 sf_city$parcels <- read_csv("parcel_tract.csv")$value
 
 
-#-----------PUMA SORT---------------
-pumas <- pumas[st_intersects(st_centroid(pumas),sf_shape,sparse = F), ]
 
-puma_tract <- mapply(function(t){
-  p <- pumas[st_intersects(st_centroid(t),pumas,sparse=F),]$PUMA[1]
-  print(p)
-  return(p)
-},sf_city$geometry)
-
-sf_city$puma <- puma_tract
 sf_city <- sf_city %>% filter(Hskill19 >0)
 
 
@@ -465,24 +477,30 @@ sf_city <- sf_city %>% filter(Hskill19 >0)
 
 #------Units Data----------
 
-units19 <- read_csv("NHGIS_data/units/units19.csv") %>% filter(NAME_E %in% sf_city$NAME) %>%
+units19 <- read_csv("NHGIS_data/housing19.csv") %>% filter(NAME_E %in% sf_city$NAME) %>%
   mutate(Cstock19 = AMJXE069 + AMJXE070 +AMJXE071 +AMJXE072 +AMJXE076 +AMJXE077 +AMJXE078 +AMJXE079 +
            AMJXE083 +AMJXE084 +AMJXE085 +AMJXE086,
-         Cstruct19 = round(AMJXE069/3 + AMJXE070/14.5 +AMJXE071/34.5 +AMJXE072/50 +AMJXE076/3 +AMJXE077/14.5 +AMJXE078/34.5 +AMJXE079/50 +
-           AMJXE083/3 +AMJXE084/14.5 +AMJXE085/34.5 +AMJXE086/50,0),
+         Cstruct19 = round(AMJXE069/3 + AMJXE070/12 +AMJXE071/34.5 +AMJXE072/50 +AMJXE076/3 +AMJXE077/12 +AMJXE078/34.5 +AMJXE079/50 +
+           AMJXE083/3 +AMJXE084/12 +AMJXE085/34.5 +AMJXE086/50,0),
          Xstock19 = AMJXE047 +AMJXE048 +AMJXE049 +AMJXE050 +AMJXE051 +AMJXE054 +AMJXE055 +AMJXE056 + AMJXE057 +AMJXE058 +
            AMJXE061 + AMJXE062 + AMJXE063 + AMJXE064 + AMJXE065 + AMJXE068 +AMJXE075 +AMJXE082,
-         Xstruct19 = round(AMJXE047 +AMJXE048/3 +AMJXE049/14.5 +AMJXE050/34.5 +AMJXE051/50 +AMJXE054 +AMJXE055/3 +AMJXE056/14.5 + AMJXE057/34.5 +AMJXE058/50 +
-           AMJXE061 + AMJXE062/3 + AMJXE063/14.5 + AMJXE064/34.5 + AMJXE065/50 + AMJXE068 +AMJXE075 +AMJXE082,0)) %>%
-  rename(Ostock19 = total_O,
-         NAME = NAME_E) 
+         Xstruct19 = round(AMJXE047 +AMJXE048/3 +AMJXE049/12 +AMJXE050/34.5 +AMJXE051/50 +AMJXE054 +AMJXE055/3 +AMJXE056/12 + AMJXE057/34.5 +AMJXE058/50 +
+           AMJXE061 + AMJXE062/3 + AMJXE063/12 + AMJXE064/34.5 + AMJXE065/50 + AMJXE068 +AMJXE075 +AMJXE082,0),
+         Ostock19 = AMJXE002,
+         Ostruct19 = round(AMJXE004 + AMJXE005/3 + AMJXE006/12 + AMJXE007/34.5 + AMJXE008/50 + 
+           AMJXE011 + AMJXE012/3 + AMJXE013/12 + AMJXE014/34.5 + AMJXE015/50 + 
+           AMJXE018 + AMJXE019/3 + AMJXE020/12 + AMJXE021/34.5 + AMJXE022/50 + 
+           AMJXE025 + AMJXE026/3 + AMJXE027/12 + AMJXE028/34.5 + AMJXE029/50 + 
+           AMJXE032 + AMJXE033/3 + AMJXE034/12 + AMJXE035/34.5 + AMJXE036/50 + 
+           AMJXE039 + AMJXE040/3+ AMJXE041/12 + AMJXE042/34.5 + AMJXE043, 0)) %>%
+  rename(NAME = NAME_E) 
 
 nanner <- function(x){
   ifelse(is.nan(x) == T, 0, x)
 }
 
 
-units10 <- read_csv("NHGIS_data/units/units10.csv") %>% filter(NAME %in% sf_city$NAME)%>%
+units10 <- read_csv("NHGIS_data/housing10.csv") %>% filter(NAME_E %in% sf_city$NAME)%>%
   mutate(Cstock10 = J9GE055 + J9GE056 + J9GE057 + J9GE058 + J9GE062 + J9GE063 + J9GE064 + J9GE065 + 
            J9GE069 + J9GE070 + J9GE071 + J9GE072,
          Cstruct10 = round(J9GE055/3 + J9GE056/14.5 + J9GE057/34.5 + J9GE058/50 + J9GE062/3 + J9GE063/14.5 + J9GE064/34.5 + J9GE065/50 + 
@@ -490,15 +508,26 @@ units10 <- read_csv("NHGIS_data/units/units10.csv") %>% filter(NAME %in% sf_city
          Xstock10 = J9GE040 + J9GE041 + J9GE042 + J9GE043 + J9GE044 + J9GE047 + J9GE048 + J9GE049 + J9GE050 + J9GE051 +
            J9GE054 + J9GE061 + J9GE068,
          Xstruct10 = round(J9GE040 + J9GE041/3 + J9GE042/14.5 + J9GE043/34.5 + J9GE044/50 + J9GE047 + J9GE048/3 + J9GE049/14.5 + J9GE050/34.5 + J9GE051/50 +
-           J9GE054 + J9GE061 + J9GE068,0)) %>%
-  rename(Ostock10 = J9GE002) %>%
-  mutate(Csize10 = Cstock10/Cstruct10, Xsize10=Xstock10/Xstruct10) %>%
-  mutate(Csigma10 = sqrt((3-Csize10)^2*J9GE055/3 + (14.5-Csize10)^2*J9GE056/14.5 + (34.5-Csize10)^2*J9GE057/34.5 + (50-Csize10)^2*J9GE058/50 + 
-                         (3-Csize10)^2*J9GE062/3 + (14.5-Csize10)^2*J9GE063/14.5 + (34.5-Csize10)^2*J9GE064/34.5 + (50-Csize10)^2*J9GE065/50 + 
-                         (3-Csize10)^2*J9GE069/3 + (14.5-Csize10)^2*J9GE070/14.5 + (34.5-Csize10)^2*J9GE071/34.5 + (50-Csize10)^2*J9GE072/50),
-         Xsigma10 = sqrt((1-Xsize10)^2*J9GE040 + (3-Xsize10)^2*J9GE041/3 + (14.5-Xsize10)^2*J9GE042/14.5 + (34.5-Xsize10)^2*J9GE043/34.5 + (50-Xsize10)^2*J9GE044/50 + 
-                         (1-Xsize10)^2*J9GE047 + (3-Xsize10)^2*J9GE048/3 + (14.5-Xsize10)^2*J9GE049/14.5 + (34.5-Xsize10)^2*J9GE050/34.5 + (50-Xsize10)^2*J9GE051/50 +
-                         (1-Xsize10)^2*J9GE054 + (1-Xsize10)^2*J9GE061 + (1-Xsize10)^2*J9GE068))
+           J9GE054 + J9GE061 + J9GE068,0),
+         Ostock10 = J9GE002,
+         Ostruct10 = round(J9GE004 + J9GE005/3 + J9GE006/12 + J9GE007/34.5 + J9GE008/50 +
+           J9GE011 + J9GE012/3 + J9GE013/12 + J9GE014/34.5 + J9GE015/50 +
+           J9GE018 + J9GE019/3 + J9GE020/12 + J9GE021/34.5 + J9GE022/50 +
+           J9GE025 + J9GE026/3 + J9GE027/12 + J9GE028/34.5 + J9GE039/50 +
+           J9GE032 + J9GE033/3 + J9GE034/12 + J9GE035/34.5  + J9GE036/50,0)) %>%
+  mutate(Csize10 = Cstock10/Cstruct10, Xsize10=Xstock10/Xstruct10, Osize10 = Ostock10/Ostruct10) %>%
+  mutate(Csigma10 = sqrt((3-Csize10)^2*J9GE055/3 + (12-Csize10)^2*J9GE056/14.5 + (34.5-Csize10)^2*J9GE057/34.5 + (50-Csize10)^2*J9GE058/50 + 
+                         (3-Csize10)^2*J9GE062/3 + (12-Csize10)^2*J9GE063/14.5 + (34.5-Csize10)^2*J9GE064/34.5 + (50-Csize10)^2*J9GE065/50 + 
+                         (3-Csize10)^2*J9GE069/3 + (12-Csize10)^2*J9GE070/14.5 + (34.5-Csize10)^2*J9GE071/34.5 + (50-Csize10)^2*J9GE072/50),
+         Xsigma10 = sqrt((1-Xsize10)^2*J9GE040 + (3-Xsize10)^2*J9GE041/3 + (12-Xsize10)^2*J9GE042/14.5 + (34.5-Xsize10)^2*J9GE043/34.5 + (50-Xsize10)^2*J9GE044/50 + 
+                         (1-Xsize10)^2*J9GE047 + (3-Xsize10)^2*J9GE048/3 + (12-Xsize10)^2*J9GE049/14.5 + (34.5-Xsize10)^2*J9GE050/34.5 + (50-Xsize10)^2*J9GE051/50 +
+                         (1-Xsize10)^2*J9GE054 + (1-Xsize10)^2*J9GE061 + (1-Xsize10)^2*J9GE068),
+         Osigma10 = sqrt((1-Osize10^2)*J9GE004 + (3-Osize10)^2*J9GE005 + (12-Osize10)^2*J9GE006 + (34.5-Osize10)*J9GE007 + (50-Osize10)^2*J9GE008 +
+           (1-Osize10^2)*J9GE011 + (3-Osize10)^2*J9GE012 + (12-Osize10)^2*J9GE013 + (34.5-Osize10)*J9GE014 + (50-Osize10)^2*J9GE015 +
+           (1-Osize10^2)*J9GE018 + (3-Osize10)^2*J9GE019 + (12-Osize10)^2*J9GE020 + (34.5-Osize10)*J9GE021 + (50-Osize10)^2*J9GE022 +
+           (1-Osize10^2)*J9GE025 + (3-Osize10)^2^2*J9GE026 + (34.5-Osize10)*J9GE027 + (50-Osize10)^2*J9GE029 +
+           (1-Osize10^2)*J9GE032 + (3-Osize10)^2*J9GE033 + (12-Osize10)^2*J9GE034 + (34.5-Osize10)*J9GE035 + (50-Osize10)^2*J9GE036)) %>%
+  rename(NAME = NAME_E) 
         
 #------ Rent data ---------
 na_means <- function(x,y){
@@ -535,14 +564,24 @@ unitrents19 <- read_csv("NHGIS_data/rents/rents19.csv") %>% filter(NAME %in% sf_
                  na_means(b2000,b2000)*(AMJXE054 + AMJXE055 +AMJXE056 +AMJXE057 + AMJXE058) + 
                  na_means(b1990,b1980)*(AMJXE061 + AMJXE062 +AMJXE063 +AMJXE064 + AMJXE065) +
                  na_means(b1970,b1960)*AMJXE068 + na_means(b1950,b1940)*AMJXE075 + na_means(b1939,b1939)*AMJXE082)/Xstock19
+  )%>%
+  mutate(
+    CsigmaR19 = sqrt(nanner((na_means(b1970_me,b1960_me)*sqrt(AMJXE069 + AMJXE070 +AMJXE071 +AMJXE072)/qt(0.975,AMJXE069 + AMJXE070 +AMJXE071 +AMJXE072))^2) +
+                       nanner((na_means(b1950_me,b1940_me)*sqrt(AMJXE076 + AMJXE077 +AMJXE078 +AMJXE079)/qt(0.975,AMJXE076 + AMJXE077 +AMJXE078 +AMJXE079))^2) +
+                       nanner((na_means(b1939_me,b1939_me)*sqrt(AMJXE083 + AMJXE084 +AMJXE085 +AMJXE086)/qt(0.975,AMJXE083 + AMJXE084 +AMJXE085 +AMJXE086))^2)), 
+    XsigmaR19 = sqrt(nanner((na_means(b2014_me,b2000_me)*sqrt(AMJXE047 + AMJXE048 +AMJXE049 +AMJXE050 + AMJXE051)/qt(0.975,AMJXE047 + AMJXE048 +AMJXE049 +AMJXE050 + AMJXE051))^2) +
+                       nanner((na_means(b1990_me,b1980_me)*sqrt(AMJXE061 + AMJXE062 +AMJXE063 +AMJXE064 + AMJXE065)/qt(0.975,AMJXE061 + AMJXE062 +AMJXE063 +AMJXE064 + AMJXE065))^2) +
+                       nanner((na_means(b1970_me,b1960_me)*sqrt(AMJXE068)/qt(0.975,AMJXE068))^2) + nanner((na_means(b1950_me,b1940_me)*sqrt(AMJXE075)/qt(0.975,AMJXE075))^2) + 
+                       nanner((na_means(b1939_me,b1939_me)*sqrt(AMJXE082)/qt(0.975,AMJXE082))^2))
   )
 
 # Pair down dataframes to merge with unitrents
-merge19 <- unitrents19 %>% dplyr::select(NAME, Cstock19, Cstruct19, Crent19, Xstock19, Xstruct19, Xrent19)
+merge19 <- unitrents19 %>% dplyr::select(NAME, Cstock19, Cstruct19, Crent19, Xstock19, Xstruct19, Xrent19, Ostock19, Ostruct19)
 merge10 <- unitrents10 %>% 
-  dplyr::select(NAME, Cstock10, Cstruct10, Crent10, Csigma10, CsigmaR10,Xstock10, Xstruct10, Xrent10, Xsigma10, XsigmaR10)
+  dplyr::select(NAME, Cstock10, Csize10, Cstruct10, Crent10, Csigma10, CsigmaR10,Xstock10, Xsize10, Xstruct10, Xrent10, Xsigma10, XsigmaR10, Ostock10, Osize10, Ostruct10, Osigma10)
 
 sf_city <- left_join(sf_city, merge19, by = "NAME") %>% left_join(merge10,by = "NAME")
+
 
 #--------------Mortgage data -----------------#
 mortgages19 <- read_csv("NHGIS_data/mortgages/mortgages19.csv") %>% 
@@ -686,7 +725,7 @@ sf_indshares <- sf_indshares %>% filter(INDNAICS %in% as.character(unique(zbp18$
 emp_shareH = as.matrix(sf_indshares$ind_share[1:20])
 emp_shareL = as.matrix(sf_indshares$ind_share[21:40])
 loc_shares = zbp[,23:42] %>% as.tibble() %>% dplyr::select(!geometry) %>% as.matrix()
-dist <- st_distance(st_centroid(sf_city$geometry), st_centroid(zbp$geometry)) %>% as.numeric() %>% as.matrix() %>% Reshape(196, 27)
+dist <- st_distance(st_centroid(sf_city$geometry), st_centroid(zbp$geometry)) %>% as.numeric() %>% as.matrix() %>% Reshape(195, 27)
 
 # Compute expected commute distances
 sf_city$Hcommute <- dist %*% loc_shares %*% emp_shareH
@@ -791,12 +830,233 @@ write_csv(permits, "permits.csv")
 
 permits <- permits %>% mutate(conversion = ifelse(address %in% demos$address | blocklot %in% demos$blocklot, 1, 0))
 
+# ----- REGRESSION ANALYSIS
+
+# Filter build into adjustment/renovation data
+adjustments <- build %>% mutate(ExstngUn = ifelse(is.na(ExstngUn) == T, 0, ExstngUn),
+                                PrpsdUn = ifelse(is.na(PrpsdUn) == T,0,PrpsdUn)) %>%
+  filter(merge == 0, PrmtTyp != "demolitions", demo == 0, ExstngUn >0, ExstngUs %in% res,
+         ExstngUn < PrpsdUn, ExstngUn > 0, cost > 1) %>%
+  mutate(unit_cost = cost/(PrpsdUn - ExstngUn),
+         scaling = PrpsdUn/ExstngUn) %>%
+  filter(unit_cost > 2000)
+
+condocons <- build %>% 
+  mutate(ExstngUn = ifelse(is.na(ExstngUn) == T, 0, ExstngUn),
+         PrpsdUn = ifelse(is.na(PrpsdUn) == T,0,PrpsdUn),
+         condocon = condo*convrsn) %>%
+  filter(PrmtTyp != "demolitions", ExstngUn >0, ExstngUs %in% res,
+         condocon == 1|lotto == 1, ExstngUn > 0, cost > 1) %>%
+  mutate(unit_cost = cost/(PrpsdUn - ExstngUn)) %>%
+  filter(unit_cost > 2000)
+
+construction <- build %>% 
+  mutate(ExstngUn = ifelse(is.na(ExstngUn) == T, 0, ExstngUn),
+         PrpsdUn = ifelse(is.na(PrpsdUn) == T,0,PrpsdUn)) %>%
+  filter(PrmtTyD != "demolitions", (demo ==1 | ExstngUn == 0) , PrpsdUn > ExstngUn) %>%
+  mutate(unit_cost = cost/(PrpsdUn - ExstngUn)) %>% filter(unit_cost >2000)
+
+app <- mapply(function(x){
+  num <- sum(ifelse(as.numeric(substr(unlist(regmatches(x, gregexpr("[[:digit:]]+", x))),1,4)) >2000 & 
+                      as.numeric(substr(unlist(regmatches(x, gregexpr("[[:digit:]]+", x))),1,4)) <2020,1,0))
+  return(num)
+}, construction$Dscrptn)
+
+construction <- construction %>% mutate(is_app = app) %>%
+  filter(is_app == 0, grepl("new construction",PrmtTyD))
+
+removals <- build %>% mutate(ExstngUn = ifelse(is.na(ExstngUn) == T, 0, ExstngUn),
+                             PrpsdUn = ifelse(is.na(PrpsdUn) == T,0,PrpsdUn)) %>%
+  filter(PrmtTyD != "demolitions", demo == 0, ExstngUn >0, ExstngUs %in% res,
+         ExstngUn > PrpsdUn, ExstngUn > 0, cost > 1) %>%
+  mutate(unit_cost = cost/(-PrpsdUn +ExstngUn)) %>%
+  filter(unit_cost > 2000)
+
+#-------ADJUSTMENT COSTS REGRESSION--------
+
+regA <- lm(log(cost) ~ log(PrpsdUn/ExstngUn) + tract -1, adjustments)
+
+FE_A <- tibble(
+  GEOID = sort(unique(adjustments$tract)),
+  Gamma = exp(regA$coefficients[2:167])*regA$coefficients[1]*(-2)/(-1)
+)
+
+sf_city <- left_join(sf_city,FE_A, by = "GEOID") %>%
+  mutate(Gamma = ifelse(is.na(Gamma) == T, mean(Gamma, na.rm = T), Gamma))
+
+regCondo <- lm(cost ~ PrpsdUn, condocons)
+
+#-------RENOVATION REGRESSIONS----------
+
+construction2 <- filter(construction, log(PrpsdUn) > 1)
+
+regC <- lm(log(cost) ~ log(PrpsdUn) + tract -1, construction)
+
+FE_C <- tibble(
+  GEOID = sort(unique(construction$tract)),
+  Psi = exp(regC$coefficients[2:149])*regC$coefficients[1]*(-2)/(-1)
+)
+
+sf_city <- left_join(sf_city, FE_C, by = "GEOID") %>% 
+  mutate(Psi = ifelse(is.na(Psi) == T, mean(Psi, na.rm = T), Psi))
+
+construction$rawfit<- exp(predict(regC))
+
+removals <- mutate(removals, demo_units = ExstngUn-PrpsdUn)
+
+regR <- lm(cost ~ demo_units + merge, removals)
+
+
 
 #------- WRITE SF_CITY TO CSV -----
 
-sf_data <- sf_city 
-sf_data$geometry <- NULL
 
+
+
+
+ddi <- read_ipums_ddi("usa_00013.xml")
+ipums <- read_ipums_micro(ddi) 
+ipums <- ipums %>% filter(MET2013 == 41860, AGE > 18, !grepl("M", INDNAICS), INDNAICS != 0, YEAR ==2019) %>%
+  mutate(INDNAICS = str_sub(INDNAICS,1,2),
+         skill = ifelse(EDUCD>100,"H","L"),
+         OWNERSHP = OWNERSHP-1) 
+  
+
+neighborhoods <- st_read("neighborhoods/neighborhoods.shp") %>%
+  rename(GEOID = geoid) %>%
+  dplyr::select(GEOID,nhood)
+
+neighborhoods$geometry <- NULL
+
+winners <- conwin_zip %>% 
+  mutate(win = win2 + win3 + win4 + win5 + win6) %>%
+  dplyr::select(main_zip,win)
+
+sf_city<- left_join(sf_city,winners, by = "main_zip") %>%
+  group_by(main_zip) %>%
+  mutate(win = as.numeric(win * st_area(geometry)/st_area(st_union(geometry)))) %>%
+  ungroup() %>% mutate(win = win/sum(win))
+
+
+sf_neighborhoods <- sf_city %>% left_join(neighborhoods, by = "GEOID") %>%
+  group_by(nhood) %>% 
+    mutate(
+    Hskill19 = sum(Hskill19, na.rm = T),        
+    Lskill19 = sum(Lskill19, na.rm = T),       
+    Hskill10 = sum(Hskill10, na.rm = T),      
+    Lskill10 = sum(Lskill10, na.rm = T),       
+    CrateH10 = mean(CrateH10, na.rm = T),       
+    CrateL10 = mean(CrateL10, na.rm = T),       
+    CrateH10_C = mean(CrateH10_C, na.rm = T),    
+    CrateL10_C = mean(CrateL10_C, na.rm = T),     
+    XrateH10 = mean(XrateH10, na.rm = T),       
+    XrateL10 = mean(XrateL10, na.rm = T),       
+    OrateH10 = mean(OrateH10, na.rm = T),       
+    OrateL10 = mean(OrateL10, na.rm = T),      
+    CrateH19 = mean(CrateH19, na.rm = T),       
+    CrateL19 = mean(CrateL19, na.rm = T),       
+    CrateH19_C = mean(CrateH19_C, na.rm = T),     
+    CrateL19_C = mean(CrateL19_C, na.rm = T),     
+    XrateH19 = mean(XrateH19, na.rm = T),      
+    XrateL19 = mean(XrateL19, na.rm = T),       
+    OrateH19 = mean(OrateH19, na.rm = T),       
+    OrateL19 = mean(OrateL19, na.rm = T),       
+    CshareH10 = sum(CshareH10, na.rm = T),        
+    CshareL10 = sum(CshareL10, na.rm = T),    
+    CshareH10_C = sum(CshareH10_C, na.rm = T),    
+    CshareL10_C = sum(CshareL10_C, na.rm = T),    
+    XshareH10 = sum(XshareH10, na.rm = T),      
+    XshareL10 = sum(XshareL10, na.rm = T),      
+    OshareH10 = sum(OshareH10, na.rm = T),      
+    OshareL10 = sum(OshareL10, na.rm = T),       
+    CshareH19 = sum(CshareH19, na.rm = T),      
+    CshareL19 = sum(CshareL19, na.rm = T),      
+    CshareH19_C = sum(CshareH19_C, na.rm = T),    
+    CshareL19_C = sum(CshareL19_C, na.rm = T),   
+    XshareH19 = sum(XshareH19, na.rm = T),      
+    XshareL19 = sum(XshareL19, na.rm = T),      
+    OshareH19 = sum(OshareH19, na.rm = T),      
+    OshareL19 = sum(OshareL19, na.rm = T),      
+    win2 = sum(win2, na.rm = T),           
+    win3 = sum(win3, na.rm = T),           
+    win4 = sum(win4, na.rm = T),           
+    win5 = sum(win5, na.rm = T),          
+    win6 = sum(win6, na.rm = T), 
+    win = sum(win),
+    parcels = sum(parcels, na.rm = T),        
+    Cstock19 = sum(Cstock19, na.rm = T),       
+    Cstruct19 = sum(Cstruct19, na.rm = T),      
+    Crent19  = mean(Crent19, na.rm = T),    
+    Xstock19 = sum(Xstock19, na.rm = T),        
+    Xstruct19 = sum(Xstruct19, na.rm = T),      
+    Xrent19  = mean(Xrent19, na.rm = T),       
+    Ostock19 = sum(Ostock19, na.rm = T),       
+    Ostruct19 = sum(Ostruct19, na.rm = T),    
+    Cstock10  = sum(Cstock10, na.rm = T),      
+    Csize10  = mean(Csize10, na.rm = T),      
+    Cstruct10 = sum(Cstruct10, na.rm = T),      
+    Crent10  = mean(Crent10, na.rm = T),       
+    Csigma10  = mean(Csigma10, na.rm = T),     
+    CsigmaR10 = mean(CsigmaR10, na.rm = T),      
+    Xstock10  = sum(Xstock10, na.rm = T),      
+    Xsize10 = mean(Xsize10, na.rm = T),        
+    Xstruct10  = sum(Xstruct10, na.rm = T),     
+    Xrent10 = mean(Xrent10, na.rm = T),       
+    Xsigma10 = mean(Xsigma10, na.rm = T),       
+    XsigmaR10 = mean(XsigmaR10, na.rm = T),      
+    Ostock10 = sum(Ostock10, na.rm = T),     
+    Osize10 = mean(Osize10, na.rm = T),        
+    Ostruct10 = sum(Ostruct10, na.rm = T),   
+    Osigma10 = mean(Osigma10, na.rm = T),      
+    mortgage10 = mean(mortgage10, na.rm = T),     
+    Mortgagesigma10 = mean(Mortgagesigma10, na.rm = T),
+    mortgage19 = mean(mortgage19, na.rm = T),     
+    Mortgagesigma19 = mean(Mortgagesigma19, na.rm = T),
+    avgBO = mean(avgBO, na.rm = T),          
+    Hcommute = mean(Hcommute, na.rm = T),       
+    Lcommute = mean(Lcommute, na.rm = T),       
+    parks = sum(parks, na.rm = T),         
+    park_area = sum(park_area, na.rm = T),      
+    park_share = as.numeric(sum(park_area, na.rm = T)/st_area(st_union(geometry))),     
+    water = as.numeric(st_distance(st_centroid(st_union(geometry)),california)),          
+    Gamma = mean(Gamma, na.rm = T),          
+    Psi = mean(Psi, na.rm = T), 
+    geometry = st_union(geometry)
+  ) %>%
+  distinct(nhood, .keep_all = T) %>%
+  dplyr::select(-cbd, -res_share, -com_share, -ind_share, -mixed_share, -park_share, -GEOID, -NAME)
+
+# recalculate cbd, instruments for each neighbohood
+leftovers <- map_df(1:dim(sf_neighborhoods)[1],function(x){
+  hood <- sf_neighborhoods[x,]
+  zoning <- zones[st_intersects(hood,zones, sparse = F),]
+  c = st_set_crs(cbd,st_crs(hood))
+  df = tibble(
+    nhood = hood$nhood[1],
+    park_share = as.numeric(hood$park_area/st_area(hood)),
+    cbd = as.numeric(st_distance(c,st_centroid(hood))),
+    res_share = ifelse(length(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Residential",]),0),hood))[1] == 0, 0,
+      as.numeric(st_area(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Residential",]),0),hood)))/as.numeric(st_area(hood))),
+    com_share = ifelse(length(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Commercial",]),0),hood))[1] == 0, 0,
+        as.numeric(st_area(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Commercial",]),0),hood)))/as.numeric(st_area(hood))),
+    ind_share = ifelse(length(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Industrial",]),0),hood))[1] ==0, 0,
+      as.numeric(st_area(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Industrial",]),0),hood)))/as.numeric(st_area(hood))),
+    mix_share = ifelse(length(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Mixed Use",]),0),hood))[1] ==0, 0,
+      as.numeric(st_area(st_intersection(st_buffer(st_union(zoning[zoning$gen == "Mixed Use",]),0),hood)))/as.numeric(st_area(hood))),
+  )
+  return(df)
+})
+
+sf_neighborhoods <- sf_neighborhoods %>% left_join(leftovers, by = "nhood")
+
+sf_data <- sf_neighborhoods
+sf_data$geometry <- NULL
+sf_data$cent <- NULL
+
+sf_data[is.na(sf_data)] <- 0
 write_csv(sf_data, "sf_data.csv")
+
+
+
 
 
