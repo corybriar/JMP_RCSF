@@ -26,13 +26,13 @@ function endow(data, R, N)
         # ν draws:
         ν = randn(N[2],5)
         # Set up price matrix
-        rents = repeat([R[:,1] ; R[:,3] ; R[:,4]]',N[2])
+        rents = repeat([R[:,1]; R[:,3]; R[:,4]]',N[2])
         # Loop by tract and endow some agents with RC_C by replacement
         index = 1
         poptrack = 0
         for x in 1:size(data.CshareH10)[1]
                 # Find number of RCs to replace
-                pop = round(Int,N[1]*data.CshareH10[x])
+                pop = round(Int,N[1]*(data.CshareH10[x] + data.CshareH10_C[x]))
                 # Reassign values
                 rents[index:(pop + poptrack),x] .= R[x,2]
                 # Update indexes
@@ -46,17 +46,17 @@ function endow(data, R, N)
 end
 
 
-
-
 # IU -- generates terms for indirect utility
 function make_mu(alphasigma, consum, data)
         # Tract characteristics X
         X = [data.cbd./1000 data.Hcommute./1000 data.parks data.park_share data.water./1000]
         ν = consum[:,1:5]
         # Assemble inner utility
-        μ = -alphasigma[1].*consum[:,6:size(consum)[2]] + repeat(ν*Diagonal(exp.(alphasigma[2:6]))*X',inner = (1,3))
+        μ = -exp(alphasigma[1]).*consum[:,6:size(consum)[2]] +
+        repeat(ν*Diagonal(exp.(alphasigma[2:6]))*X',outer = (1,3))
         return μ
 end
+
 
 
 # Berry Contraction loop
@@ -78,12 +78,12 @@ function innerloop(alphasigma, μ, tol, iter, skill, data)
         last_diff = 100
         while CONT == true && count < 200
                 # Calculate model shares based on μ, etc.
-                denom = (sum(exp.((δC' .+ reshape(μ[1:3:end],N,J))./λC),dims = 2)).^λC + (sum(exp.((δX' .+ reshape(μ[2:3:end],N,J)./λX)),dims = 2)).^λX  + (sum(exp.((δO' .+ reshape(μ[1:3:end],N,J)./λO)),dims = 2)).^λO .+ 1
+                denom = (sum(exp.((δC' .+ μ[:,1:J])./λC),dims = 2)).^λC + (sum(exp.((δX' .+ μ[:,(J+1):2*J])./λX),dims = 2)).^λX  + (sum(exp.((δO' .+ μ[:,(2*J+1):end])./λO),dims = 2)).^λO .+ 1
                 # Calculate model predicted shares
                 # Note: since λ is different for each housing type, have to do this separately then compile into a single δ later
-                sharem_C = sum(exp.((δC' .+ reshape(μ[1:3:end],N,J))/λC) .*(sum(exp.((δC' .+reshape(μ[1:3:end],N,J))/λC)))^(λC-1)./denom, dims = 1)./N
-                sharem_X = sum(exp.((δX' .+ reshape(μ[2:3:end],N,J))/λX) .*(sum(exp.((δX' .+reshape(μ[2:3:end],N,J))/λX)))^(λX-1)./denom, dims = 1)./N
-                sharem_O = sum(exp.((δO' .+ reshape(μ[3:3:end],N,J))/λO) .*(sum(exp.((δO' .+reshape(μ[3:3:end],N,J))/λO)))^(λO-1)./denom, dims = 1)./N
+                sharem_C = sum(exp.((δC' .+ μ[:,1:J])/λC) .*(sum(exp.((δC' .+μ[:,1:J])/λC),dims = 2)).^(λC-1)./denom, dims = 1)./N
+                sharem_X = sum(exp.((δX' .+ μ[:,(J+1):2*J])/λX) .*(sum(exp.((δX' .+μ[:,(J+1):2*J])/λX),dims = 2)).^(λX-1)./denom, dims = 1)./N
+                sharem_O = sum(exp.((δO' .+ μ[:,(2*J+1):end])/λO) .*(sum(exp.((δO' .+ μ[:,(2*J+1):end])/λO),dims = 2)).^(λO-1)./denom, dims = 1)./N
 
                 # Delta contraction
                 # Condition on skill level to get right moments from data
@@ -119,11 +119,7 @@ function innerloop(alphasigma, μ, tol, iter, skill, data)
                         count += 1
                 end
                 # Check to see if difference is repeating
-                if last_diff == findmax(abs.(δ - δnew))[1]
-                        CONT = false
-                else
-                     last_diff = findmax(abs.(δ - δnew))[1]
-                end
+
 
 
         end
@@ -148,6 +144,8 @@ function outerloop(alphasigma, consum, R, skill, iter, data)
        end
         # Z, matrix of zoning instruments
         Z = repeat([data.res_share data.com_share data.ind_share data.mix_share], outer = 3)
+        #Z = repeat([data.Gamma data.Psi], outer = 3)
+        #Z = repeat([data.res_share data.mix_share data.Gamma data.Psi], outer = 3)
         W = inv(Z'Z)
         #
         β = inv(transpose(X)*Z*inv(W)*transpose(Z)*X)*transpose(X)*Z*W*transpose(Z)*δ
@@ -169,31 +167,43 @@ function makeR(data,year,times, varR, para)
                 RO = zeros(size(data)[1],1,1);
                 if year ==2010
                     for j in 1:size(data)[1]
+                        # size distributions
+                        dΛC = truncated(Normal(data.Csize10[j],data.Csigma10[j]),0, Inf)
+                        dΛC_C = truncated(Normal(data.Csize10[j],data.Csigma10[j]),0, Inf)
+                        dΛX = truncated(Normal(data.Xsize10[j],data.Xsigma10[j]),0, Inf)
+                        dΛO = truncated(Normal(data.Osize10[j],data.Osigma10[j]),0, Inf)
+
+                        # rental distributions
                         dC = truncated(Normal(data.Crent10[j],data.CsigmaR10[j]),data.Crent10[j] - varR,data.Crent10[j] + varR);
                         dC_C = truncated(Normal(data.Crent10[j],data.CsigmaR10[j]),data.Crent10[j] - varR,data.Crent10[j] + varR);
                         dX = truncated(Normal(data.Xrent10[j],data.XsigmaR10[j]),data.Xrent10[j] - varR,data.Xrent10[j] + varR);
-                        dO = truncated(Normal(data.mortgage10[j],max(data.Mortgagesigma10[j],1e-3)),data.mortgage10[j] - varR,data.mortgage10[j] + varR);
-                            RC[j] = sum((rand(dC,data.Cstruct10[j]).^(1+θ) ) )^(1/(1+θ));
-                            RC_C[j] = ρ*sum((rand(dC_C,data.Cstruct10[j]).^(1+θ) ) )^(1/(1+θ));
-                            RX[j] = sum((rand(dX,data.Xstruct10[j]).^(1+θ) ) )^(1/(1+θ));
-                            RO[j] = sum((rand(dO,data.Ostruct10[j]).^(1+θ) ) )^(1/(1+θ));
-                    end
+                        dO = truncated(Normal(data.mortgage10[j],max(data.Mortgagesigma10[j])),data.mortgage10[j] - varR,data.mortgage10[j] + varR);
+                            RC[j] = sum((rand(dΛC, data.Cstruct10[j]).*rand(dC,data.Cstruct10[j]).^(1+θ) ) )^(1/(1+θ));
+                            RC_C[j] = ρ*sum((rand(dΛC, data.Cstruct10[j]).*rand(dC_C,data.Cstruct10[j],).^(1+θ) ) )^(1/(1+θ));
+                            RX[j] = sum(rand(dΛX, data.Xstruct10[j]).*(rand(dX,min(data.Xstruct10[j],1)).^(1+θ) ) )^(1/(1+θ));
+                            RO[j] = sum((rand(dΛC, data.Ostruct10[j]).*rand(dO,min(data.Ostruct10[j],1)).^(1+θ) ) )^(1/(1+θ));
+                    end # j-loop
                 else
-
                     for j in 1:size(data)[1]
+                            # size distributions
+                            dΛC = truncated(Normal(data.Csize10[j],data.Csigma10[j]),0, Inf)
+                            dΛC_C = truncated(Normal(data.Csize10[j],data.Csigma10[j]),0, Inf)
+                            dΛX = truncated(Normal(data.Xsize10[j],data.Xsigma10[j]),0, Inf)
+                            dΛO = truncated(Normal(data.Osize10[j],data.Osigma10[j]),0, Inf)
+                            # Rental distributions
                         dC = truncated(Normal(data.Crent19[j],data.CsigmaR10[j]),data.Crent19[j] - varR,data.Crent19[j] + varR);
-                        dC_C = truncated(Normal(data.Crent19[j],data.CsigmaR10[j]),data.Crent19[j] - varR,data.Crent19[j] + varR);
+                        dC_C = truncated(Normal(data.Crent10[j],data.CsigmaR10[j]),data.Crent10[j] - varR,data.Crent10[j] + varR);
                         dX = truncated(Normal(data.Xrent19[j],data.XsigmaR10[j]),data.Xrent19[j] - varR,data.Xrent19[j] + varR);
                         dO = truncated(Normal(data.mortgage19[j],max(data.Mortgagesigma19[j],1e-3)),data.mortgage19[j] - varR,data.mortgage19[j] + varR);
-                            RC[j] = sum((rand(dC,data.Cstruct19[j]).^(1+θ) ) )^(1/(1+θ));
-                            RC_C[j] = ρ*sum((rand(dC_C,data.Cstruct10[j]).^(1+θ) ) )^(1/(1+θ));
-                            RX[j] = sum((rand(dX,data.Xstruct19[j]).^(1+θ) ) )^(1/(1+θ));
-                            RO[j] = sum((rand(dO,data.Ostruct19[j]).^(1+θ) ) )^(1/(1+θ));
-                    end
+                            RC[j] = sum((rand(dΛC,data.Cstruct19[j]) .*rand(dC,data.Cstruct19[j]).^(1+θ) ) )^(1/(1+θ));
+                            RC_C[j] = ρ*sum((rand(dΛC, data.Cstruct10[j]).*rand(dC_C,data.Cstruct10[j],).^(1+θ) ) )^(1/(1+θ));
+                            RX[j] = sum(rand(dΛC,data.Xstruct19[j]) .*(rand(dX,data.Xstruct19[j]).^(1+θ) ) )^(1/(1+θ));
+                            RO[j] = sum((rand(dΛC,data.Ostruct19[j]) .*rand(dO,data.Ostruct19[j]).^(1+θ) ) )^(1/(1+θ));
+                    end # j loop
 
-            end
+            end # if statement
             R[:,:,t] = [RC RC_C RX RO]
-        end
+    end # t loop
 
         R = mean(R,dims = 3)[:,:,1]
 
@@ -220,6 +230,8 @@ function outerloop_return(alphasigma, consum, R, skill, iter, data)
        end
         # Z, matrix of zoning instruments
         Z = repeat([data.res_share data.com_share data.ind_share data.mix_share], outer = 3)
+        #Z = repeat([data.Gamma data.Psi], outer = 3)
+        #Z = repeat([data.res_share data.mix_share data.Gamma data.Psi], outer = 3)
         W = inv(Z'Z)
         #
         β = inv(transpose(X)*Z*inv(W)*transpose(Z)*X)*transpose(X)*Z*W*transpose(Z)*δ
@@ -284,7 +296,7 @@ function BLP(guess, skill, N, iter, data, perturb, times)
         # Set up matrices to store results
         βstore = zeros(5,times)
         AS_store = zeros(9,times)
-        ξstore = zeros(size(data)[1],times)
+        ξstore = zeros(3*size(data)[1],times)
         # Make R
         R = makeR(data,2019,100, 1000, para)
         for t in 1:times
@@ -300,11 +312,11 @@ function BLP(guess, skill, N, iter, data, perturb, times)
         # take means across stored results
         β = mean(βstore, dims = 2)
         AS = mean(AS_store, dims = 2)
-        ξ = mean(ξstore, dims = 2)x
+        ξ = mean(ξstore, dims = 2)
         return β, AS, ξstore
 end
 
-H = Int.([1286 1738].*2);
+H = Int.([1286 1738].*5);
 #H = [1286088 1738678];
 #L = [1668244 1770388];
 
@@ -314,4 +326,4 @@ data = CSV.read("sf_data.csv",DataFrame)
 
 
 # Redesign innerloop to quit if distance repeated
-βH, AS_H, ξH = BLP(guess, "H", H, 1000, data, 0.001, 2)
+βH, AS_H, ξH = BLP(guess, "H", H, 1000, data, 0.001, 5)
